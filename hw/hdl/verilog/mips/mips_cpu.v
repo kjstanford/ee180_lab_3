@@ -122,8 +122,8 @@ module mips_cpu (
     );
 
     // Load-linked / Store-conditional
-    wire atomic_en = en & mem_read_id;
-    dffarre       atomic  (.clk(clk), .ar(rst), .r(rst_id), .en(atomic_en), .d(mem_atomic_id), .q(mem_atomic_ex));
+    wire atomic_en = en & (mem_read_id | mem_we_id);
+    dffarre       atomic  (.clk(clk), .ar(rst), .r(1'b0), .en(&{atomic_en, ~stall}), .d(mem_atomic_id), .q(mem_atomic_ex));
     dffarre       sc      (.clk(clk), .ar(rst), .r(rst_id), .en(en), .d(mem_sc_id), .q(mem_sc_ex));
 
     // needed for X stage
@@ -159,7 +159,7 @@ module mips_cpu (
 
     // needed for M stage
     wire [31:0] sc_result = {{31{1'b0}},(mem_sc_ex & mem_we_ex)};
-    wire [31:0] alu_sc_result_ex = alu_result_ex;   // TODO: Need to conditionally inject SC value
+    wire [31:0] alu_sc_result_ex = mem_sc_ex ? sc_result: alu_result_ex;   // TODO: Need to conditionally inject SC value
     dffare #(32) alu_result_ex2mem (.clk(clk), .r(rst), .en(en), .d(alu_sc_result_ex), .q(alu_result_mem));
     dffare mem_read_ex2mem (.clk(clk), .r(rst), .en(en), .d(mem_read_ex), .q(mem_read_mem));
     dffare mem_byte_ex2mem (.clk(clk), .r(rst), .en(en), .d(mem_byte_ex), .q(mem_byte_mem));

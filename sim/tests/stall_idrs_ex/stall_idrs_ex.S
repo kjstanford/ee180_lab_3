@@ -32,7 +32,7 @@ boot:
     nop
     nop
     lw      $t3, 0($t0)
-    xor     $t4, $t3, $t2
+    xor     $t4, $t2, $t3
     nop
     nop
     nop

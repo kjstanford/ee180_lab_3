@@ -115,12 +115,14 @@ module decode (
             {`ORI, `DC6}:       alu_opcode = `ALU_OR;
             {`XORI, `DC6}:      alu_opcode = `ALU_XOR;
             {`LB, `DC6}:        alu_opcode = `ALU_ADD;
+            {`LL, `DC6}:        alu_opcode = `ALU_ADD;
             {`LH, `DC6}:        alu_opcode = `ALU_ADD;
             {`LW, `DC6}:        alu_opcode = `ALU_ADD;
             {`LBU, `DC6}:       alu_opcode = `ALU_ADD;
             {`SB, `DC6}:        alu_opcode = `ALU_ADD;
             {`SH, `DC6}:        alu_opcode = `ALU_ADD;
             {`SW, `DC6}:        alu_opcode = `ALU_ADD;
+            {`SC, `DC6}:        alu_opcode = `ALU_ADD;
             {`BEQ, `DC6}:       alu_opcode = `ALU_SUBU;
             {`BNE, `DC6}:       alu_opcode = `ALU_SUBU;
             {`SPECIAL, `ADD}:   alu_opcode = `ALU_ADD;
@@ -131,6 +133,7 @@ module decode (
             {`SPECIAL, `AND}:   alu_opcode = `ALU_AND;
             {`SPECIAL, `OR}:    alu_opcode = `ALU_OR;
             {`SPECIAL, `XOR}:   alu_opcode = `ALU_XOR;
+            {`SPECIAL, `NOR}:   alu_opcode = `ALU_NOR;
             {`SPECIAL, `MOVN}:  alu_opcode = `ALU_PASSX;
             {`SPECIAL, `MOVZ}:  alu_opcode = `ALU_PASSX;
             {`SPECIAL, `SLT}:   alu_opcode = `ALU_SLT;
@@ -163,7 +166,7 @@ module decode (
 // Compute value for 32 bit immediate data
 //******************************************************************************
 
-    wire use_imm = &{op != `SPECIAL, op != `SPECIAL2, op != `BNE, op != `BEQ}; // where to get 2nd ALU operand from: 0 for RtData, 1 for Immediate
+    wire use_imm = &{op != `SPECIAL, op != `SPECIAL2, op != `BNE, op != `BEQ, op != `JAL}; // where to get 2nd ALU operand from: 0 for RtData, 1 for Immediate
 
     wire [31:0] imm_sign_extend = {{16{immediate[15]}}, immediate};
     wire [31:0] imm_zero_extend = {16'b0, immediate};
@@ -194,6 +197,7 @@ module decode (
     // assign rt_data = rt_data_in;
 
     wire rs_mem_dependency = &{rs_addr == reg_write_addr_ex, mem_read_ex, rs_addr != `ZERO};
+    wire rt_mem_dependency = &{rt_addr == reg_write_addr_ex, mem_read_ex, rt_addr != `ZERO};
 
     wire isLUI = op == `LUI;
     wire read_from_rs = ~|{isLUI, jump_target, isShiftImm};
@@ -201,7 +205,8 @@ module decode (
     wire isALUImm = |{op == `ADDI, op == `ADDIU, op == `SLTI, op == `SLTIU, op == `ANDI, op == `ORI, op == `XORI};
     wire read_from_rt = ~|{isLUI, jump_target, isALUImm, mem_read};
 
-    assign stall = rs_mem_dependency & read_from_rs;
+    assign stall = |{(rs_mem_dependency & read_from_rs), (rt_mem_dependency & read_from_rt)};
+    // assign stall = |{(rs_mem_dependency & read_from_rs)};
 
     assign jr_pc = rs_data;
     assign mem_write_data = rt_data;
@@ -219,17 +224,21 @@ module decode (
     // for link operations, use next pc (current pc + 8)
     // for immediate operations, use Imm
     // otherwise use rt
-    wire [31:0] alu_op_y_temp = (|{isJAL, isJALR}) ? (pc + 8) : rt_data; 
+    wire [31:0] alu_op_y_temp = (|{isJAL, isJALR, isBranchLink}) ? (pc + 4'h8) : rt_data; 
     assign alu_op_y = (use_imm) ? imm : alu_op_y_temp;
 
-    wire [4:0] reg_write_addr_temp = (|{isJAL, isJALR}) ? `RA : rd_addr;
+    wire [4:0] reg_write_addr_temp = (|{isJAL, isJALR, isBranchLink}) ? `RA : rd_addr;
     assign reg_write_addr = (use_imm) ? rt_addr : reg_write_addr_temp;
 
     // determine when to write back to a register (any operation that isn't an
     // unconditional store, non-linking branch, or non-linking jump)
+    // wire movnz = |{&{op == `SPECIAL, funct == `MOVN}, &{op == `SPECIAL, funct == `MOVZ}};
+    // assign reg_we = |{(~|{(mem_we & (op != `SC)), isJ, isJR, isBGEZNL, isBGTZ, isBLEZ, isBLTZNL, isBNE, isBEQ, movnz}), movn, movz};
     assign reg_we = ~|{(mem_we & (op != `SC)), isJ, isJR, isBGEZNL, isBGTZ, isBLEZ, isBLTZNL, isBNE, isBEQ};
 
     // determine whether a register write is conditional
+    // assign movn = &{op == `SPECIAL, funct == `MOVN, rt_data != 0};
+    // assign movz = &{op == `SPECIAL, funct == `MOVZ, rt_data == 0};
     assign movn = &{op == `SPECIAL, funct == `MOVN};
     assign movz = &{op == `SPECIAL, funct == `MOVZ};
 
@@ -248,10 +257,12 @@ module decode (
     assign mem_sc_id = (op == `SC);
 
     // 'atomic_id' is high when a load-linked has not been followed by a store.
-    assign atomic_id = 1'b0;
+    // assign atomic_id = 1'b0;
+    assign atomic_id = |{op == `LL, &{atomic_ex, ~mem_we}};
 
     // 'mem_sc_mask_id' is high when a store conditional should not store
-    assign mem_sc_mask_id = 1'b0;
+    //assign mem_sc_mask_id = 1'b0;
+    assign mem_sc_mask_id = mem_sc_id & ~atomic_ex;
 
 //******************************************************************************
 // Branch resolution
@@ -262,7 +273,7 @@ module decode (
     wire isGEZ = ~rs_data[31];
     
 
-    assign jump_branch = |{isBEQ & isEqual, isBGTZ & ~isLEZ, isBLEZ & isLEZ, isBGEZNL & isGEZ, isBLTZNL & ~isGEZ, 
+    assign jump_branch = |{isBEQ & isEqual, isBGTZ & ~isLEZ, isBLEZ & isLEZ, isBGEZNL & isGEZ, isBGEZAL & isGEZ, isBLTZNL & ~isGEZ, isBLTZAL & ~isGEZ, 
                            isBNE & ~isEqual};
 
     assign jump_target = |{isJ, isJAL};
